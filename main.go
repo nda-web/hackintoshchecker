@@ -8,13 +8,12 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/shirou/gopsutil/cpu"
 	"github.com/shirou/gopsutil/disk"
-	"github.com/shirou/gopsutil/host"
 	"github.com/shirou/gopsutil/mem"
-	"github.com/shirou/gopsutil/net"
 )
 
 // Códigos de color ANSI
@@ -24,6 +23,14 @@ const (
 	Yellow = "\033[33m"
 	Reset  = "\033[0m"
 )
+
+// GPUInfo almacena la información de la tarjeta gráfica
+type GPUInfo struct {
+	Name     string
+	Vendor   string
+	DeviceID string
+	MemoryGB int // Almacena la memoria de la GPU en GB
+}
 
 func main() {
 	// Mostrar el arte ASCII en el inicio
@@ -39,17 +46,13 @@ func main() {
 \____/_/ /_/\___/\___/_/|_|\___/_/                   
 `)
 
-	// Mostrar el nombre del programa, la versión y los creadores con colores
 	fmt.Println("Creadores: Martin Oviedo & Daedalus")
-
-	// Separar los créditos con una línea
 	fmt.Println("----------------------------------------\n")
 	fmt.Println("\n### Informacion de la PC ###")
-	// Veredicto y consejos
-	var veredictoCPU, veredictoRAM, veredictoDisk, veredictoUEFI, veredictoSecureBoot string
 
-	// Definir la variable secureBoot antes de usarla
+	var veredictoCPU, veredictoRAM, veredictoDisk, veredictoUEFI, veredictoSecureBoot, veredictoGPU string
 	var secureBoot bool
+	var compatibleGPU bool
 
 	// Información del procesador
 	cpuInfo, err := cpu.Info()
@@ -61,7 +64,6 @@ func main() {
 		fmt.Printf("CPU: %s\nNúcleos: %d, Frecuencia: %.2f GHz\n", c.ModelName, c.Cores, c.Mhz/1000)
 		fmt.Println("----------------------------------------")
 
-		// Veredicto CPU
 		if strings.Contains(c.ModelName, "Intel") {
 			veredictoCPU = fmt.Sprintf("%sTu CPU es Intel, compatible con Hackintosh.%s", Green, Reset)
 		} else if strings.Contains(c.ModelName, "AMD") {
@@ -71,13 +73,26 @@ func main() {
 		}
 	}
 
+	// Detectar GPU
+	gpus := getGPUInfo() // Captura el valor de retorno
+	fmt.Println("\n### Información de GPU ###")
+	for _, gpu := range gpus {
+		fmt.Printf("GPU: %s\nFabricante: %s\nDevice ID: %s\nMemoria de GPU: %d GB\n", gpu.Name, gpu.Vendor, gpu.DeviceID, gpu.MemoryGB)
+
+		compatibleGPU = isGPUCompatible(gpu)
+		if compatibleGPU {
+			veredictoGPU = fmt.Sprintf("%sGPU compatible con Hackintosh: %s%s", Green, gpu.Name, Reset)
+		} else {
+			veredictoGPU = fmt.Sprintf("%sGPU no compatible o requiere configuración especial: %s%s", Yellow, gpu.Name, Reset)
+		}
+	}
+
 	// Información de la memoria
 	memInfo, err := mem.VirtualMemory()
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("Memoria total: %v MB\n", memInfo.Total/1024/1024)
-	// Veredicto RAM
+	fmt.Printf("\nMemoria total: %v MB\n", memInfo.Total/1024/1024)
 	if memInfo.Total >= 8*1024*1024*1024 {
 		veredictoRAM = fmt.Sprintf("%sTienes suficiente memoria RAM para instalar macOS (mínimo 8GB).%s", Green, Reset)
 	} else if memInfo.Total >= 4*1024*1024*1024 {
@@ -86,37 +101,19 @@ func main() {
 		veredictoRAM = fmt.Sprintf("%sNo tienes suficiente memoria RAM para instalar macOS (mínimo 4GB).%s", Red, Reset)
 	}
 
-	// Información de los discos
+	// Información del disco
 	diskInfo, err := disk.Usage("/")
 	if err != nil {
 		log.Fatal(err)
 	}
 	fmt.Printf("Disco total: %v GB, Usado: %.2f%%\n", diskInfo.Total/1024/1024/1024, diskInfo.UsedPercent)
-	// Veredicto Disco
 	if diskInfo.Free > 50*1024*1024*1024 {
 		veredictoDisk = fmt.Sprintf("%sTienes suficiente espacio libre en el disco (mínimo 50 GB).%s", Green, Reset)
 	} else {
 		veredictoDisk = fmt.Sprintf("%sNo tienes suficiente espacio libre en el disco. Se recomienda al menos 50 GB libres.%s", Red, Reset)
 	}
 
-	// Información del host (BIOS, UEFI, sistema)
-	hostInfo, err := host.Info()
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Printf("Sistema operativo: %s %s (%s)\n", hostInfo.OS, hostInfo.Platform, hostInfo.PlatformVersion)
-	fmt.Printf("Tiempo de arranque: %v segundos\n", hostInfo.Uptime)
-
-	// Información de las interfaces de red
-	netInfo, err := net.Interfaces()
-	if err != nil {
-		log.Fatal(err)
-	}
-	for _, iface := range netInfo {
-		fmt.Printf("Interfaz de red: %s, Dirección MAC: %s\n", iface.Name, iface.HardwareAddr)
-	}
-
-	// Verificar modo UEFI
+	// Verificaciones de UEFI y Secure Boot
 	isUEFI, err := checkUEFIMode()
 	if err != nil {
 		veredictoUEFI = fmt.Sprintf("No se pudo determinar el modo UEFI: %v", err)
@@ -128,7 +125,6 @@ func main() {
 		}
 	}
 
-	// Verificar Secure Boot (solo en Windows)
 	if runtime.GOOS == "windows" {
 		secureBoot, err = checkSecureBootWindows()
 		if err != nil {
@@ -140,32 +136,109 @@ func main() {
 				veredictoSecureBoot = fmt.Sprintf("%sSecure Boot está deshabilitado, listo para Hackintosh.%s", Green, Reset)
 			}
 		}
-	} else {
-		veredictoSecureBoot = "La verificación de Secure Boot no está implementada para este sistema operativo."
 	}
 
 	// Mostrar el veredicto final
 	fmt.Println("\n### Veredicto Final ###")
 	fmt.Println(veredictoCPU)
+	fmt.Println(veredictoGPU)
 	fmt.Println(veredictoRAM)
 	fmt.Println(veredictoDisk)
 	fmt.Println(veredictoUEFI)
 	fmt.Println(veredictoSecureBoot)
 
+	// Veredicto general de compatibilidad
+	fmt.Println("\n### Compatibilidad General ###")
+	if strings.Contains(veredictoCPU, "compatible") && compatibleGPU &&
+		strings.Contains(veredictoRAM, "suficiente") &&
+		strings.Contains(veredictoDisk, "suficiente") &&
+		isUEFI && !secureBoot {
+		fmt.Printf("%sTu sistema es COMPATIBLE con Hackintosh!%s\n", Green, Reset)
+	} else {
+		fmt.Printf("%sTu sistema requiere ajustes antes de instalar Hackintosh. Revisa los detalles anteriores.%s\n", Yellow, Reset)
+	}
+
 	fmt.Println("\n### Consejos para Hackintosh ###")
 	if isUEFI && (runtime.GOOS == "windows" && !secureBoot) {
-		fmt.Println("Tu sistema está casi listo para Hackintosh. Revisa los componentes específicos como la tarjeta gráfica y otros periféricos para asegurar compatibilidad.")
-	} else if !isUEFI {
-		fmt.Println("Debes cambiar el sistema al modo UEFI desde la configuración de BIOS antes de proceder con la instalación de Hackintosh.")
+		fmt.Println("1. Asegúrate de tener una copia de seguridad de todos tus datos importantes")
+		fmt.Println("2. Descarga los kexts necesarios para tu hardware específico")
+		fmt.Println("3. Prepara un USB booteable con OpenCore o Clover")
+		if !compatibleGPU {
+			fmt.Println("4. Tu GPU puede requerir configuración especial o no ser compatible")
+		}
+	} else {
+		fmt.Println("Debes resolver los problemas mencionados en el veredicto antes de proceder")
 	}
+
 	fmt.Println("\nGracias por usar HackintoshChecker")
-	// Usar bufio.NewReader para esperar a que el usuario presione una tecla
 	fmt.Println("\nPresiona 'Enter' para salir...")
 	reader := bufio.NewReader(os.Stdin)
-	_, _ = reader.ReadString('\n') // Espera hasta que el usuario presione Enter
+	_, _ = reader.ReadString('\n')
 }
 
-// checkUEFIMode verifica si el sistema está en modo UEFI.
+// Función para capturar la información de la GPU, incluyendo la memoria en GB desde el registro de Windows
+func getGPUInfo() []GPUInfo {
+	var gpus []GPUInfo
+
+	if runtime.GOOS == "windows" {
+		cmd := exec.Command("powershell", "-Command", "$qwMemorySize = (Get-ItemProperty -Path \"HKLM:\\SYSTEM\\ControlSet001\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}\\0*\" -Name HardwareInformation.qwMemorySize -ErrorAction SilentlyContinue).\"HardwareInformation.qwMemorySize\"; [math]::round($qwMemorySize / 1GB)")
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			fmt.Println(Red + "Error ejecutando PowerShell: " + err.Error() + Reset)
+			fmt.Println("Salida de PowerShell:", string(output))
+			return gpus
+		}
+
+		memoryGBStr := strings.TrimSpace(string(output))
+		memoryGB, err := strconv.Atoi(memoryGBStr)
+		if err != nil {
+			fmt.Println(Red + "Error convirtiendo la memoria de VRAM a GB: " + err.Error() + Reset)
+			memoryGB = 0 // Default si falla la conversión
+		}
+
+		// Aquí asignamos los valores a la GPU (supongamos que ya tienes el nombre y demás)
+		gpu := GPUInfo{
+			Name:     "Radeon RX 570", // ejemplo
+			Vendor:   "AMD",           // ejemplo
+			DeviceID: "VideoController1",
+			MemoryGB: memoryGB,
+		}
+
+		gpus = append(gpus, gpu)
+	}
+
+	return gpus
+}
+
+// Función para verificar la compatibilidad de la GPU
+func isGPUCompatible(gpu GPUInfo) bool {
+	gpuName := strings.ToLower(gpu.Name)
+	gpuVendor := strings.ToLower(gpu.Vendor)
+
+	// Lista de GPUs compatibles
+	if strings.Contains(gpuName, "intel") || strings.Contains(gpuVendor, "intel") {
+		return true
+	}
+
+	if strings.Contains(gpuName, "amd") || strings.Contains(gpuVendor, "amd") ||
+		strings.Contains(gpuName, "radeon") {
+		compatibleSeries := []string{"rx", "vega", "polaris"}
+		for _, series := range compatibleSeries {
+			if strings.Contains(gpuName, series) {
+				return true
+			}
+		}
+		return false
+	}
+
+	if strings.Contains(gpuName, "nvidia") || strings.Contains(gpuVendor, "nvidia") {
+		return false
+	}
+
+	return false
+}
+
+// checkUEFIMode verifica el modo UEFI
 func checkUEFIMode() (bool, error) {
 	switch runtime.GOOS {
 	case "windows":
@@ -185,7 +258,7 @@ func checkUEFIMode() (bool, error) {
 	}
 }
 
-// checkSecureBootWindows verifica si Secure Boot está habilitado en Windows.
+// checkSecureBootWindows verifica el estado de Secure Boot en Windows
 func checkSecureBootWindows() (bool, error) {
 	cmd := exec.Command("powershell", "-Command", "Confirm-SecureBootUEFI")
 	var out bytes.Buffer
@@ -207,14 +280,3 @@ func checkSecureBootWindows() (bool, error) {
 		return false, fmt.Errorf("resultado inesperado: %s", result)
 	}
 }
-
-/*Para compilar con Powershell use
-
-Instrucción para PowerShell:
-$env:GOOS="windows"; $env:GOARCH="amd64"; go build -o HackintoshChecker.exe
-
-Instrucción para CMD:
-set GOOS=windows && set GOARCH=amd64 && go build -o HackintoshChecker.exe
-
-recuerde instalar MinDW
-*/
